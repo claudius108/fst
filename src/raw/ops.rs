@@ -116,6 +116,24 @@ impl<'f> OpBuilder<'f> {
         }
     }
 
+    /// Performs an intersection by suffix operation on all streams that have been added.
+    ///
+    /// Note that this returns a stream of `(&[u8], &[IndexedValue])`. The
+    /// first element of the tuple is the byte string key. The second element
+    /// of the tuple is a list of all occurrences of that key in participating
+    /// streams. The `IndexedValue` contains an index and the value associated
+    /// with that key in that stream. The index uniquely identifies each
+    /// stream, which is an integer that is auto-incremented when a stream
+    /// is added to this operation (starting at `0`).
+    #[inline]
+    pub fn intersection_by_suffix(self) -> IntersectionBySuffix<'f> {
+        IntersectionBySuffix {
+            heap: StreamHeap::new(self.streams),
+            outs: vec![],
+            cur_slot: None,
+        }
+    }
+
     /// Performs a difference operation with respect to the first stream added.
     /// That is, this returns a stream of all elements in the first stream
     /// that don't exist in any other stream that has been added.
@@ -256,7 +274,61 @@ impl<'a, 'f> Streamer<'a> for Intersection<'f> {
             self.outs.clear();
             self.outs.push(slot.indexed_value());
             let mut popped: usize = 1;
-            while let Some(slot2) = self.heap.pop_if_equal(slot.input()) {
+            while let Some(slot2) = self.heap.pop_if_equal_by_suffix(slot.input()) {
+                self.outs.push(slot2.indexed_value());
+                self.heap.refill(slot2);
+                popped += 1;
+            }
+            if popped < self.heap.num_slots() {
+                self.heap.refill(slot);
+            } else {
+                self.cur_slot = Some(slot);
+                let key = self.cur_slot.as_ref().unwrap().input();
+                return Some((key, &self.outs));
+            }
+        }
+    }
+}
+
+/// A stream of set intersection by suffix over multiple fst streams in lexicographic
+/// order.
+///
+/// The `'f` lifetime parameter refers to the lifetime of the underlying fst.
+pub struct IntersectionBySuffix<'f> {
+    heap: StreamHeap<'f>,
+    outs: Vec<IndexedValue>,
+    cur_slot: Option<Slot>,
+}
+
+impl<'a, 'f> Streamer<'a> for IntersectionBySuffix<'f> {
+    type Item = (&'a [u8], &'a [IndexedValue]);
+
+    fn next(&'a mut self) -> Option<(&'a [u8], &'a [IndexedValue])> {
+        if let Some(slot) = self.cur_slot.take() {
+            self.heap.refill(slot);
+        }
+        loop {
+            let slot = match self.heap.pop() {
+                None => return None,
+                Some(slot) => {
+                    let slot_input = slot.input;
+                    let slot_input_splitted: Vec<_> =
+                        slot_input.split(|i| *i == 45).collect();
+                    let slot_input_suffix =
+                        *slot_input_splitted.get(1).unwrap();
+
+                    let mut slot_by_suffix = Slot::new(slot.idx);
+                    slot_by_suffix.set_input(slot_input_suffix);
+                    slot_by_suffix.set_output(slot.output);
+
+                    slot_by_suffix
+                }
+            };
+            self.outs.clear();
+            self.outs.push(slot.indexed_value());
+
+            let mut popped: usize = 1;
+            while let Some(slot2) = self.heap.pop_if_equal_by_suffix(slot.input()) {
                 self.outs.push(slot2.indexed_value());
                 self.heap.refill(slot2);
                 popped += 1;
@@ -383,6 +455,27 @@ impl<'f> StreamHeap<'f> {
 
     fn pop_if_equal(&mut self, key: &[u8]) -> Option<Slot> {
         if self.peek_is_duplicate(key) {
+            self.pop()
+        } else {
+            None
+        }
+    }
+
+    fn peek_is_duplicate_by_suffix(&self, key: &[u8]) -> bool {
+        self.heap
+            .peek()
+            .map(|s| {
+                let slot_input_splitted: Vec<_> =
+                    s.input().split(|i| *i == 45).collect();
+                let slot_input_suffix = *slot_input_splitted.get(1).unwrap();
+
+                slot_input_suffix == key
+            })
+            .unwrap_or(false)
+    }
+
+    fn pop_if_equal_by_suffix(&mut self, key: &[u8]) -> Option<Slot> {
+        if self.peek_is_duplicate_by_suffix(key) {
             self.pop()
         } else {
             None
@@ -640,4 +733,66 @@ mod tests {
         ]);
         assert_eq!(v, vec![(s("c"), 3)]);
     }
+}
+
+#[test]
+fn fst_intersection_1_test() {
+    use crate::{set, Set};
+
+    let set_1 = Set::from_iter(vec!["1-1", "1-2", "1-3"]).unwrap();
+
+    let set_2 = Set::from_iter(vec!["2-2", "2-3"]).unwrap();
+
+    let mut stream = set::OpBuilder::new()
+        .add(set_1.into_stream())
+        .add(set_2.into_stream())
+        .intersection_by_suffix();
+
+    let mut keys = vec![];
+    while let Some(key) = stream.next() {
+        keys.push(String::from_utf8(key.to_vec()).unwrap());
+    }
+
+    assert_eq!(keys, vec!["2", "3"]);
+}
+
+#[test]
+fn fst_intersection_2_test() {
+    use crate::automaton::Str;
+    use crate::{set, Automaton, Set};
+    use memmap::Mmap;
+    use std::fs::File;
+    use std::time::Instant;
+
+    let index_dir_path = "/home/claudius/workspace/repositories/git/gitlab.com/claudius.teodorescu/index-search-engine/tests/data/".to_string();
+
+    let set_data = unsafe {
+        Mmap::map(
+            &File::open(index_dir_path.clone() + "new-locators.fst").unwrap(),
+        )
+        .unwrap()
+    };
+    let set = Set::new(set_data).unwrap();
+
+    // get the first stream
+    let query_1 = Str::new("1-").starts_with();
+    let stream_1 = set.search(query_1).into_stream();
+
+    // get the second stream
+    let query_2 = Str::new("2-").starts_with();
+    let stream_2 = set.search(query_2).into_stream();
+
+    let now = Instant::now();
+    let mut stream = set::OpBuilder::new()
+        .add(stream_1)
+        .add(stream_2)
+        .intersection_by_suffix();
+    let elapsed = now.elapsed();
+    println!("Time for intersection: {:.2?}", elapsed);
+
+    let mut keys = vec![];
+    while let Some(key) = stream.next() {
+        keys.push(String::from_utf8(key.to_vec()).unwrap());
+    }
+    println!("intersection_by_suffix {:?}", keys.len());
 }

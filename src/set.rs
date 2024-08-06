@@ -902,6 +902,29 @@ impl<'s> OpBuilder<'s> {
         Intersection(self.0.intersection())
     }
 
+    /// Performs an intersection operation on all streams that have been added.
+    ///
+    /// # Example
+    ///
+    /// ```rust
+    /// use fst::{IntoStreamer, Streamer, Set};
+    ///
+    /// let set1 = Set::from_iter(&["a", "b", "c"]).unwrap();
+    /// let set2 = Set::from_iter(&["a", "y", "z"]).unwrap();
+    ///
+    /// let mut intersection = set1.op().add(&set2).intersection();
+    ///
+    /// let mut keys = vec![];
+    /// while let Some(key) = intersection.next() {
+    ///     keys.push(key.to_vec());
+    /// }
+    /// assert_eq!(keys, vec![b"a"]);
+    /// ```
+    #[inline]
+    pub fn intersection_by_suffix(self) -> IntersectionBySuffix<'s> {
+        IntersectionBySuffix(self.0.intersection_by_suffix())
+    }
+
     /// Performs a difference operation with respect to the first stream added.
     /// That is, this returns a stream of all elements in the first stream
     /// that don't exist in any other stream that has been added.
@@ -1008,6 +1031,20 @@ impl<'a, 's> Streamer<'a> for Union<'s> {
 pub struct Intersection<'s>(raw::Intersection<'s>);
 
 impl<'a, 's> Streamer<'a> for Intersection<'s> {
+    type Item = &'a [u8];
+
+    #[inline]
+    fn next(&'a mut self) -> Option<&'a [u8]> {
+        self.0.next().map(|(key, _)| key)
+    }
+}
+
+/// A stream of set intersection by suffix over multiple streams in lexicographic order.
+///
+/// The `'s` lifetime parameter refers to the lifetime of the underlying set.
+pub struct IntersectionBySuffix<'s>(raw::IntersectionBySuffix<'s>);
+
+impl<'a, 's> Streamer<'a> for IntersectionBySuffix<'s> {
     type Item = &'a [u8];
 
     #[inline]
