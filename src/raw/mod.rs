@@ -30,7 +30,7 @@ pub use crate::raw::build::Builder;
 pub use crate::raw::error::Error;
 pub use crate::raw::node::{Node, Transitions};
 pub use crate::raw::ops::{
-    Difference, IndexedValue, Intersection, IntersectionBySuffix, OpBuilder, SymmetricDifference,
+    Difference, IndexedValue, Intersection, OpBuilder, SymmetricDifference,
     Union,
 };
 
