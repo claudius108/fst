@@ -176,12 +176,6 @@ impl<'a> Str<'a> {
     pub fn new(string: &'a str) -> Str<'a> {
         Str { string: string.as_bytes() }
     }
-
-    /// Constructs automaton that matches an exact string.
-    #[inline]
-    pub fn from_bytes(bytes: &'a Vec<u8>) -> Str<'a> {
-        Str { string: bytes }
-    }
 }
 
 impl<'a> Automaton for Str<'a> {
