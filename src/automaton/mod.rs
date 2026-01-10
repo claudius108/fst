@@ -179,7 +179,7 @@ impl<'a> Str<'a> {
 
     /// Constructs automaton that matches an exact string.
     #[inline]
-    pub fn from_bytes(bytes: &'a [u8]) -> Str<'a> {
+    pub fn from_bytes(bytes: &'a Vec<u8>) -> Str<'a> {
         Str { string: bytes }
     }
 }
